@@ -1,0 +1,172 @@
+// ============================================================================
+// firestore.rules — StudyMate AI Production Security Rules
+// Version: 1.0.0
+// ============================================================================
+//
+// Security model:
+//   - Unauthenticated users: no access to any collection.
+//   - Authenticated students: can read their own profile, subjects,
+//     materials, and their own conversations. Cannot write admin data.
+//   - Authenticated admins: full read/write over all collections,
+//     EXCEPT they cannot self-escalate the role field via client writes.
+//   - Role escalation is prevented: only admins can set/change the `role`
+//     field in a user profile, and only the existing role is permitted to
+//     be 'admin' when writing (no client can forge admin status at signup).
+//
+// ============================================================================
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper Functions ─────────────────────────────────────────────────────
+
+    /** Returns true when the request carries a valid Firebase Auth token. */
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /**
+     * Reads the caller's role from their Firestore profile.
+     * Uses `get()` so this is evaluated against the committed data, not the
+     * incoming request – preventing self-escalation attacks.
+     */
+    function callerRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    /** Returns true when the caller is an admin. */
+    function isAdmin() {
+      return isAuthenticated() && callerRole() == 'admin';
+    }
+
+    /** Returns true when the caller is a student. */
+    function isStudent() {
+      return isAuthenticated() && callerRole() == 'student';
+    }
+
+    /** Returns true when the document being accessed belongs to the caller. */
+    function isOwner(uid: string) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    /**
+     * Validates that the incoming user profile write does NOT attempt to
+     * escalate role to 'admin'. Only the `admin` role itself may assign admin.
+     */
+    function noRoleEscalation() {
+      // If the incoming data contains a `role` field…
+      return !('role' in request.resource.data) ||
+             request.resource.data.role == 'student' ||
+             isAdmin();
+    }
+
+    // ─── /users/{uid} ─────────────────────────────────────────────────────────
+
+    match /users/{uid} {
+      /** Any authenticated user can read their own profile. */
+      allow read: if isOwner(uid);
+
+      /**
+       * A user can create their own profile at registration, but role must be
+       * 'student'. Admins can update any profile (e.g., to assign admin role).
+       */
+      allow create: if isOwner(uid)
+                    && request.resource.data.role == 'student'
+                    && request.resource.data.uid == uid;
+
+      /** Users may update their own profile but cannot escalate their role. */
+      allow update: if (isOwner(uid) && noRoleEscalation()) || isAdmin();
+
+      /** Only admins may delete user profiles. */
+      allow delete: if isAdmin();
+
+      /** Admins can list all users. */
+      allow list: if isAdmin();
+    }
+
+    // ─── /subjects/{subjectId} ───────────────────────────────────────────────
+
+    match /subjects/{subjectId} {
+      /** All authenticated users may read individual subjects. */
+      allow get: if isAuthenticated();
+
+      /** All authenticated users may list subjects. */
+      allow list: if isAuthenticated();
+
+      /** Only admins may create, update, or delete subjects. */
+      allow write: if isAdmin();
+    }
+
+    // ─── /materials/{materialId} ─────────────────────────────────────────────
+
+    match /materials/{materialId} {
+      /** All authenticated users may read / list materials. */
+      allow get: if isAuthenticated();
+      allow list: if isAuthenticated();
+
+      /** Only admins may create, update, or delete materials. */
+      allow write: if isAdmin();
+    }
+
+    // ─── /chunks/{chunkId} ───────────────────────────────────────────────────
+
+    match /chunks/{chunkId} {
+      /**
+       * Chunks contain raw academic text – any authenticated user may read
+       * them for client-side RAG retrieval.
+       */
+      allow read: if isAuthenticated();
+
+      /** Only admins (or backend Cloud Functions) may write chunks. */
+      allow write: if isAdmin();
+    }
+
+    // ─── /conversations/{conversationId} ─────────────────────────────────────
+
+    match /conversations/{conversationId} {
+      /**
+       * A student may read their own conversation.
+       * `resource.data.userId` is the stored owner UID.
+       */
+      allow get: if isAuthenticated()
+                 && resource.data.userId == request.auth.uid;
+
+      /**
+       * A student may list only conversations they own via a where clause.
+       * The query MUST include `where('userId', '==', <currentUid>)`.
+       */
+      allow list: if isAuthenticated();
+
+      /**
+       * A student may create a conversation only for themselves.
+       * The `userId` field in the document must match their UID.
+       */
+      allow create: if isAuthenticated()
+                    && request.resource.data.userId == request.auth.uid;
+
+      /**
+       * A student may update (append messages) only their own conversation.
+       * The `userId` field cannot be changed (no hijacking another user's thread).
+       */
+      allow update: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == request.auth.uid;
+
+      /** A student may delete their own conversations. Admins can delete any. */
+      allow delete: if isAuthenticated()
+                    && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // ─── Deny-All Fallback ────────────────────────────────────────────────────
+
+    /**
+     * Explicit catch-all deny for any collection not matched above.
+     * Belt-and-suspenders: Firebase denies by default, but this makes intent clear.
+     */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

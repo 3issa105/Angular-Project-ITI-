@@ -1,0 +1,80 @@
+// ============================================================================
+// storage.rules — StudyMate AI Production Storage Security Rules
+// Version: 1.0.0
+// ============================================================================
+//
+// Security model:
+//   - Only authenticated admins may upload files to Cloud Storage.
+//   - Uploads are restricted to the /materials/ path prefix.
+//   - Only PDF files are accepted (content type validation).
+//   - Maximum file size: 50 MB per upload.
+//   - Authenticated users (students and admins) may read/download materials.
+//   - All other paths and operations are denied.
+//
+// ============================================================================
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ─── Helper Functions ─────────────────────────────────────────────────────
+
+    /** Returns true when the request carries a valid Firebase Auth token. */
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /**
+     * Checks the caller's custom claim for admin status.
+     * NOTE: Custom claims must be set via the Admin SDK (e.g., Cloud Function).
+     * Storage rules cannot call Firestore `get()`, so we rely on custom claims.
+     */
+    function isAdmin() {
+      return isAuthenticated()
+          && request.auth.token.role == 'admin';
+    }
+
+    /** Validates that the uploaded file is a PDF. */
+    function isPdf() {
+      return request.resource.contentType == 'application/pdf';
+    }
+
+    /** Validates that the file does not exceed 50 MB. */
+    function isUnder50MB() {
+      return request.resource.size <= 50 * 1024 * 1024;
+    }
+
+    // ─── /materials/{allSubPaths} ─────────────────────────────────────────────
+
+    match /materials/{allPaths=**} {
+      /**
+       * Any authenticated user (student or admin) may download materials.
+       * The Firestore `materials` collection enforces which materials are visible.
+       */
+      allow read: if isAuthenticated();
+
+      /**
+       * Only admins may upload PDF files.
+       * Enforces: content-type = PDF, size ≤ 50 MB.
+       */
+      allow write: if isAdmin()
+                   && isPdf()
+                   && isUnder50MB();
+
+      /**
+       * Only admins may delete uploaded materials.
+       */
+      allow delete: if isAdmin();
+    }
+
+    // ─── Deny-All Fallback ────────────────────────────────────────────────────
+
+    /**
+     * Deny all other paths. Belt-and-suspenders catch-all.
+     */
+    match /{allOtherPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
