@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # StudymateAi
 
 This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 19.2.27.
@@ -57,3 +58,7 @@ Angular CLI does not come with an end-to-end testing framework by default. You c
 ## Additional Resources
 
 For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+=======
+# Angular-Project-ITI-
+StudyMate AI is an academic learning platform built with Angular 22 and Client-Side RAG. It extracts textbook PDFs in the browser to deliver grounded study chat sessions using Groq Cloud, eliminating AI hallucinations with verified source citations and role-based student and faculty portals.
+>>>>>>> 94a9c68d19a325b7956f74d5b7069503ca1f5c14
